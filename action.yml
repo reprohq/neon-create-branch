@@ -1,0 +1,124 @@
+name: 'Neon Database - extended create branch action'
+author: 'Repro'
+description: 'Get or create a Neon Postgres branch and endpoint based on a parent branch'
+branding:
+  icon: 'box'
+  color: 'blue'
+
+inputs:
+  project_id:
+    description: 'Neon project ID'
+    required: true
+
+  branch_name:
+    description: 'Name of the branch to be created'
+    required: true
+
+  parent_id:
+    description: 'Parent branch ID. Defaults to the "main" branch.'
+  parent_lsn:
+    description: 'A Log Sequence Number (LSN) on the parent branch. The branch will be created with data from this LSN.'
+  parent_timestamp:
+    description: 'A timestamp identifying a point in time on the parent branch. The branch will be created with data starting from this point in time.'
+
+  api_key:
+    description: 'Neon API key. Manage or create API keys in the Neon Console.'
+    required: true
+
+  pg_user:
+    description: 'User to connect to the Postgres database. This is configured in the Neon Console.'
+    required: true
+  pg_password:
+    description: 'Password to connect to the Postgres database. This is configured in the Neon Console.'
+    required: true
+
+outputs:
+  db_url:
+    description: 'New branch DATABASE_URL'
+    value: ${{ steps.branch.outputs.db_url }}
+  host:
+    description: 'New branch host'
+    value: ${{ steps.branch.outputs.host }}
+  branch_id:
+    description: 'New branch ID'
+    value: ${{ steps.branch.outputs.branch_id }}
+
+runs:
+  using: 'composite'
+
+  steps:
+    - name: Get or create database branch
+      env:
+        PROJECT_ID: ${{ inputs.project_id }}
+        BRANCH_NAME: ${{ inputs.branch_name }}
+        PARENT_ID: ${{ inputs.parent_id }}
+        PARENT_LSN: ${{ inputs.parent_lsn }}
+        PARENT_TIMESTAMP: ${{ inputs.parent_timestamp }}
+        API_KEY: ${{ inputs.api_key }}
+        PGUSER: ${{ inputs.pg_user }}
+        PGPASSWORD: ${{ inputs.pg_password }}
+      shell: bash
+      id: branch
+      run: |
+        # Find the branch id for the branch name
+        branch_id=$(curl --silent \
+          "https://console.neon.tech/api/v2/projects/${PROJECT_ID}/branches" \
+          --header "Accept: application/json" \
+          --header "Content-Type: application/json" \
+          --header "Authorization: Bearer ${API_KEY}" \
+          | jq -r .branches \
+          | jq -c '.[] | select(.name == "'${BRANCH_NAME}'")' \
+          | jq -r .id \
+        )
+
+        if [[ "$branch_id" == "" ]]; then
+          branch_config="{\"branch\":{\"name\":\"${BRANCH_NAME}\"},\"endpoints\":[{\"type\":\"read_write\"}]}"
+
+          if [[ test -n "$PARENT_LSN" ]]; then
+            branch_config=$(echo $branch_config | jq -c '.branch.parent_lsn = "'${PARENT_LSN}'"')
+          elif [[ test -n "$PARENT_TIMESTAMP" ]]; then
+            branch_config=$(echo $branch_config | jq -c '.branch.parent_timestamp = "'${PARENT_TIMESTAMP}'"')
+          fi
+
+          # Create a new branch if it doesn't exist
+          branch_id=$(curl --silent \
+            "https://console.neon.tech/api/v2/projects/${PROJECT_ID}/branches" \
+            -X POST \
+            --header "Accept: application/json" \
+            --header "Content-Type: application/json" \
+            --header "Authorization: Bearer ${API_KEY}" \
+            --data ${branch_config} \
+            | jq -r .branch \
+            | jq -r .id \
+          )
+        fi
+
+        # Find the endpoint host for the branch
+        host=$(curl --silent \
+          "https://console.neon.tech/api/v2/projects/${PROJECT_ID}/endpoints" \
+          --header "Accept: application/json" \
+          --header "Content-Type: application/json" \
+          --header "Authorization: Bearer ${API_KEY}" \
+          | jq -r .endpoints \
+          | jq -c '.[] | select(.branch_id == "'${branch_id}'")' \
+          | jq -r .host \
+        )
+
+        if [[ "$host" == "" ]]; then
+          # Create a new endpoint if it doesn't exist
+          host=$(curl --silent \
+            "https://console.neon.tech/api/v2/projects/${PROJECT_ID}/endpoints" \
+            -X POST \
+            --header "Accept: application/json" \
+            --header "Content-Type: application/json" \
+            --header "Authorization: Bearer ${API_KEY}" \
+            --data "{\"branch_id\":\"${branch_id}\",\"type\":\"read_write\"}" \
+            | jq -r .endpoints \
+            | jq -c '.[] | select(.branch_id == "'${branch_id}'")' \
+            | jq -r .host \
+          )
+        fi
+
+        echo "db_url=postgres://${PGUSER}:${PGPASSWORD}@${host}" >> $GITHUB_OUTPUT
+        echo "host=${host}" >> $GITHUB_OUTPUT
+        echo "branch_id=${branch_id}" >> $GITHUB_OUTPUT
