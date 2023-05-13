@@ -74,9 +74,9 @@ runs:
         if [[ "$branch_id" == "" ]]; then
           branch_config="{\"branch\":{\"name\":\"${BRANCH_NAME}\"},\"endpoints\":[{\"type\":\"read_write\"}]}"
 
-          if [[ test -n "$PARENT_LSN" ]]; then
+          if test -n "$PARENT_LSN"; then
             branch_config=$(echo $branch_config | jq -c '.branch.parent_lsn = "'${PARENT_LSN}'"')
-          elif [[ test -n "$PARENT_TIMESTAMP" ]]; then
+          elif test -n "$PARENT_TIMESTAMP"; then
             branch_config=$(echo $branch_config | jq -c '.branch.parent_timestamp = "'${PARENT_TIMESTAMP}'"')
           fi
 
